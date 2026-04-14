@@ -1,3 +1,21 @@
+/**
+ * signal.ts — Decision engine
+ *
+ * Maps computed indicators to actionable buy/sell/hold signals.
+ *
+ * Signal hierarchy (from strongest to weakest):
+ *   STRONG BUY  → RSI deeply oversold + MACD bullish crossover
+ *   BUY         → RSI oversold + trend confirmation (SMA or MACD)
+ *   WEAK BUY    → RSI mildly oversold + bullish SMA trend
+ *   HOLD        → no consensus among indicators
+ *   WEAK SELL   → RSI mildly overbought + bearish SMA trend
+ *   SELL        → RSI overbought + negative trend (SMA or MACD)
+ *   STRONG SELL → RSI deeply overbought + MACD bearish crossover
+ *
+ * Confidence is based on how many indicators agree (max 3: RSI, SMA trend, MACD).
+ * More agreement = higher confidence the signal is right.
+ */
+
 import type { Indicators } from "./indicators";
 
 export type SignalType = "STRONG BUY" | "BUY" | "WEAK BUY" | "HOLD" | "WEAK SELL" | "SELL" | "STRONG SELL";
@@ -6,10 +24,13 @@ export type SignalResult = { type: SignalType; icon: string; confidence: number;
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
 
 export const getSignal = (i: Indicators): SignalResult => {
+  // Pre-compute directional signals from MACD and SMA
   const bullishMacd = i.macd > i.macdSignal && i.macdHist > 0;
   const bearishMacd = i.macd < i.macdSignal && i.macdHist < 0;
-  const smaTrend = i.sma20 > i.sma50;
-  const macdHistPositive = i.macdHist > 0;
+  const smaTrend = i.sma20 > i.sma50;       // true = golden cross zone
+  const macdHistPositive = i.macdHist > 0;   // true = bullish momentum
+
+  // ── BUY SIGNALS ──────────────────────────────────────────────
 
   // STRONG BUY: RSI < 25 AND bullish MACD crossover
   if (i.rsi < 25 && bullishMacd) {
@@ -44,6 +65,8 @@ export const getSignal = (i: Indicators): SignalResult => {
     };
   }
 
+  // ── SELL SIGNALS ─────────────────────────────────────────────
+
   // STRONG SELL: RSI > 75 AND bearish MACD crossover
   if (i.rsi > 75 && bearishMacd) {
     const indicators = [i.rsi > 75, !smaTrend, bearishMacd].filter(Boolean).length;
@@ -77,7 +100,9 @@ export const getSignal = (i: Indicators): SignalResult => {
     };
   }
 
-  // HOLD: none of the above
+  // ── HOLD (default) ───────────────────────────────────────────
+
+  // No strong consensus — confidence reflects mild directional bias
   const indicators = [smaTrend, macdHistPositive, i.rsi < 50].filter(Boolean).length;
   const confidence = clamp(30 + indicators * 10);
   return {
