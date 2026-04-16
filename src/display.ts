@@ -23,7 +23,10 @@ const c = {
 };
 
 /** Format a number as USD currency string */
-const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const money = (n: number) =>
+  Number.isFinite(n)
+    ? `$${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+    : "N/A";
 
 /** Format a number as a signed percentage string */
 const pct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
@@ -50,6 +53,7 @@ export const render = (i: Indicators, s: SignalResult): string => [
   `${c.bold}${c.white}24h Change${c.reset}     ${colorFor(i.change24h)}${pct(i.change24h)}${c.reset}`,
   `${c.bold}${c.white}SMA 20${c.reset}         ${money(i.sma20)}`,
   `${c.bold}${c.white}SMA 50${c.reset}         ${money(i.sma50)}`,
+  `${c.bold}${c.white}SMA 200${c.reset}        ${money(i.sma200)}`,
   `${c.bold}${c.white}RSI (14)${c.reset}       ${i.rsi.toFixed(2)}`,
   `${c.bold}${c.white}MACD${c.reset}           ${colorFor(i.macd)}${i.macd >= 0 ? "+" : ""}${i.macd.toFixed(3)}${c.reset}`,
   `${c.bold}${c.white}MACD Signal${c.reset}    ${colorFor(i.macdSignal)}${i.macdSignal >= 0 ? "+" : ""}${i.macdSignal.toFixed(3)}${c.reset}`,

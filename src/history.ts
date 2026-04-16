@@ -4,7 +4,7 @@
  * Stores fetched price data in ~/.btc-signal/history.json so indicators
  * can be calculated across runs without re-fetching everything.
  *
- * Keeps a rolling window of the last 500 data points to bound file size.
+ * Keeps a rolling window of the last 1200 data points to bound file size.
  * Deduplicates by timestamp when merging new data with stored history.
  */
 
@@ -26,13 +26,13 @@ export const loadHistory = async (): Promise<PricePoint[]> => {
 
 /**
  * Merge stored and fresh price data, deduplicating by timestamp.
- * Sorted chronologically, capped at last 500 points.
+ * Sorted chronologically, capped at last 1200 points.
  */
 export const mergeHistory = (base: PricePoint[], extra: PricePoint[]): PricePoint[] =>
   [...new Map([...base, ...extra].map((p) => [p.timestamp, p] as const)).values()]
     .filter((p) => Number.isFinite(p.timestamp) && Number.isFinite(p.price))
     .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(-500);
+    .slice(-1200);
 
 /** Persist merged history to disk. Creates the directory if needed. */
 export const saveHistory = async (history: PricePoint[]): Promise<void> => {

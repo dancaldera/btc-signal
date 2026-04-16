@@ -30,7 +30,7 @@ const getJson = async <T>(url: string): Promise<T> => {
 
 /**
  * Fetches both current price and historical data in parallel.
- * Filters out any non-finite prices and caps at the last 500 points.
+ * Filters out any non-finite prices and caps at the last 1200 points.
  * Throws if we get fewer than 50 data points (not enough for indicators).
  */
 export const fetchMarketData = async (): Promise<MarketData> => {
@@ -43,7 +43,7 @@ export const fetchMarketData = async (): Promise<MarketData> => {
   const history = chart.prices
     .map(([timestamp, price]) => ({ timestamp, price }))
     .filter((p) => Number.isFinite(p.price))
-    .slice(-500);
+    .slice(-1200);
   if (history.length < 50) throw new Error("Not enough historical data returned");
   return { currentPrice: btc.usd, change24h: btc.usd_24h_change, history };
 };

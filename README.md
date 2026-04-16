@@ -28,6 +28,7 @@ Current Price   $74,413.00
 24h Change      +4.68%
 SMA 20          $72,660.20
 SMA 50          $71,797.67
+SMA 200         $68,205.41
 RSI (14)        72.56
 MACD            +832.945
 MACD Signal     +629.120
@@ -44,13 +45,15 @@ Why             Mixed signals - trend is positive but conditions not strong enou
 - **[CoinGecko API](https://www.coingecko.com/en/api)** — free, no API key required
 - Fetches 90 days of historical price data + current price
 - Resamples into consistent hourly candles for accurate indicator calculation
-- Stores history locally at `~/.btc-signal/history.json` (keeps last 500 data points)
+- Stores history locally at `~/.btc-signal/history.json` (keeps last 1200 data points)
 
 ### Indicators
 
 | Indicator | What It Measures |
 |-----------|-----------------|
-| **SMA 20/50** | Short vs long-term trend. When SMA20 crosses above SMA50 (golden cross) → bullish. Below (death cross) → bearish. |
+| **SMA 20** | Short-term trend over the last 20 hourly candles. |
+| **SMA 50** | Medium-term trend used with SMA20 for golden/death cross detection. |
+| **SMA 200** | Long-term trend baseline over the last 200 hourly candles. |
 | **RSI (14)** | Momentum. Uses Wilder smoothing (industry standard). Below 30 = oversold, above 70 = overbought. |
 | **MACD** | Trend strength & direction. EMA12 - EMA26 = MACD line. EMA9 of MACD = Signal line. Histogram = difference. Positive histogram = bullish momentum. |
 
@@ -76,8 +79,8 @@ Signals are generated based on how many indicators agree:
 src/
 ├── index.ts        # Entry point — orchestrates fetch → calculate → display
 ├── price.ts        # Fetches market data from CoinGecko API
-├── history.ts      # Persists price history locally (JSON, max 500 points)
-├── indicators.ts   # Calculates SMA, RSI (Wilder), MACD, EMA
+├── history.ts      # Persists price history locally (JSON, max 1200 points)
+├── indicators.ts   # Calculates SMA 20/50/200, RSI (Wilder), MACD, EMA
 ├── signal.ts       # Decision engine — maps indicators to buy/sell/hold signals
 └── display.ts      # Terminal output with ANSI colors and ASCII banner
 ```
