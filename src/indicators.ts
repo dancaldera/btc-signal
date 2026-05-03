@@ -1,49 +1,53 @@
 /**
  * indicators.ts — Technical indicator calculations
  *
- * All indicators are computed on resampled hourly candles to ensure
- * consistent periods regardless of CoinGecko's irregular data spacing.
- *
- * Indicators calculated:
- *   - SMA 20 / 50 / 200 → short, medium, and long-term trend
- *   - RSI (14)          → momentum via Wilder smoothing
- *   - MACD              → EMA12 - EMA26, signal = EMA9 of MACD
+ * Works from CoinGecko price-only history, resampled into hourly candles.
+ * Because the free endpoint used here does not provide OHLCV, volatility is
+ * estimated from close-to-close returns instead of true ATR, and volume is not
+ * used until a richer data source is added.
  */
 
 import type { PricePoint } from "./price";
 
-/** All computed indicators bundled together for the signal engine */
 export type Indicators = {
   currentPrice: number;
   change24h: number;
   sma20: number;
   sma50: number;
   sma200: number;
-  prevSma20: number;  // previous candle's SMA — used to detect crossovers
+  prevSma20: number;
   prevSma50: number;
   rsi: number;
-  macd: number;       // MACD line = EMA12 - EMA26
-  macdSignal: number; // Signal line = EMA9 of MACD
-  macdHist: number;   // Histogram = MACD - Signal (positive = bullish)
+  macd: number;
+  macdSignal: number;
+  macdHist: number;
+  prevMacd: number;
+  prevMacdSignal: number;
+  bollingerUpper: number;
+  bollingerMiddle: number;
+  bollingerLower: number;
+  bollingerPosition: number; // 0 = lower band, 1 = upper band
+  volatility20: number;      // avg absolute hourly return, percentage
+  volatility100: number;     // longer baseline, percentage
+  volatilityRatio: number;   // current / baseline
+  trend4h: "UP" | "DOWN" | "FLAT";
+  trend1d: "UP" | "DOWN" | "FLAT";
 };
 
-/** Simple average of an array of numbers */
 const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
 
-/**
- * Simple Moving Average. Offset=0 gives current SMA, offset=1 gives
- * the previous period's SMA (for crossover detection).
- */
 const sma = (values: number[], period: number, offset = 0): number => {
   const end = offset ? values.length - offset : values.length;
   if (end < period) return NaN;
   return avg(values.slice(end - period, end));
 };
 
-/**
- * Exponential Moving Average. Returns the full EMA series so MACD
- * can compute its signal line from it. Multiplier k = 2/(period+1).
- */
+const stddev = (values: number[]): number => {
+  if (values.length === 0) return NaN;
+  const mean = avg(values);
+  return Math.sqrt(avg(values.map((v) => (v - mean) ** 2)));
+};
+
 const ema = (values: number[], period: number): number[] => {
   if (values.length === 0) return [];
   const k = 2 / (period + 1);
@@ -54,26 +58,15 @@ const ema = (values: number[], period: number): number[] => {
   return result;
 };
 
-/**
- * RSI using Wilder's smoothing method (the industry standard).
- *
- * 1. Seed: simple average of first `period` gains/losses
- * 2. Smooth: avgGain = (prev * (period-1) + current) / period
- * 3. RS = avgGain / avgLoss → RSI = 100 - 100/(1+RS)
- *
- * Returns 50 (neutral) if not enough data. Returns 100 if avgLoss is 0.
- */
 const rsiWilder = (values: number[], period = 14): number => {
   if (values.length < period + 1) return 50;
   const deltas = values.slice(1).map((val, i) => val - values[i]!);
-  const gains = deltas.map(d => Math.max(d, 0));
-  const losses = deltas.map(d => Math.max(-d, 0));
+  const gains = deltas.map((d) => Math.max(d, 0));
+  const losses = deltas.map((d) => Math.max(-d, 0));
 
-  // Seed with simple average of first `period` values
   let avgGain = avg(gains.slice(0, period));
   let avgLoss = avg(losses.slice(0, period));
 
-  // Apply Wilder smoothing for remaining values
   for (let i = period; i < gains.length; i++) {
     avgGain = (avgGain * (period - 1) + gains[i]!) / period;
     avgLoss = (avgLoss * (period - 1) + losses[i]!) / period;
@@ -84,43 +77,59 @@ const rsiWilder = (values: number[], period = 14): number => {
   return 100 - 100 / (1 + rs);
 };
 
-/**
- * Resamples irregular CoinGecko price points into consistent hourly candles.
- * Groups by hour (floor timestamp to hour), takes the last price in each bucket.
- * This ensures SMA/EMA periods are truly N hours, not N random data points.
- */
 const resampleToHourly = (history: PricePoint[]): number[] => {
   const hourlyBuckets = new Map<number, number>();
   for (const point of history) {
     const hour = Math.floor(point.timestamp / 3600000) * 3600000;
-    hourlyBuckets.set(hour, point.price); // last price in each hour wins
+    hourlyBuckets.set(hour, point.price);
   }
-  return Array.from(hourlyBuckets.values());
+  return Array.from(hourlyBuckets.entries())
+    .sort(([a], [b]) => a - b)
+    .map(([, price]) => price);
 };
 
-/**
- * Main entry point — takes raw history + current price and returns
- * all computed indicators. Appends current price to history before
- * resampling so the latest hour is included.
- */
+const avgAbsReturn = (values: number[], period: number): number => {
+  if (values.length < period + 1) return NaN;
+  const slice = values.slice(-(period + 1));
+  const returns = slice.slice(1).map((price, i) => Math.abs((price / slice[i]! - 1) * 100));
+  return avg(returns);
+};
+
+const trendFromChange = (changePct: number): "UP" | "DOWN" | "FLAT" => {
+  if (changePct > 0.35) return "UP";
+  if (changePct < -0.35) return "DOWN";
+  return "FLAT";
+};
+
 export const calculateIndicators = (
   history: PricePoint[],
   currentPrice: number,
   change24h: number,
 ): Indicators => {
   const prices = resampleToHourly([...history, { timestamp: Date.now(), price: currentPrice }]);
-  if (prices.length < 26) throw new Error("Need at least 26 hourly data points");
+  if (prices.length < 200) throw new Error("Need at least 200 hourly data points");
 
-  // MACD: EMA12 - EMA26, then EMA9 of that = signal line
-  const shortPeriod = 12, longPeriod = 26;
-  const emaShort = ema(prices, shortPeriod);
-  const emaLong = ema(prices, longPeriod);
+  const emaShort = ema(prices, 12);
+  const emaLong = ema(prices, 26);
   const macdLine = emaShort.map((val, i) => val - emaLong[i]!);
-  // MACD signal starts after EMA26 has enough data
-  const macdSignalLine = ema(macdLine.slice(longPeriod - 1), 9);
+  const macdSignalLine = ema(macdLine.slice(25), 9);
 
-  const currentMacd = macdLine[macdLine.length - 1]!;
-  const currentSignal = macdSignalLine[macdSignalLine.length - 1]!;
+  const macd = macdLine[macdLine.length - 1]!;
+  const macdSignal = macdSignalLine[macdSignalLine.length - 1]!;
+  const prevMacd = macdLine[macdLine.length - 2]!;
+  const prevMacdSignal = macdSignalLine[macdSignalLine.length - 2]!;
+
+  const last20 = prices.slice(-20);
+  const bollingerMiddle = avg(last20);
+  const bandWidth = stddev(last20) * 2;
+  const bollingerLower = bollingerMiddle - bandWidth;
+  const bollingerUpper = bollingerMiddle + bandWidth;
+  const bollingerPosition = bandWidth === 0 ? 0.5 : (currentPrice - bollingerLower) / (bollingerUpper - bollingerLower);
+
+  const volatility20 = avgAbsReturn(prices, 20);
+  const volatility100 = avgAbsReturn(prices, 100);
+  const fourHoursAgo = prices[prices.length - 5] ?? prices[0]!;
+  const oneDayAgo = prices[prices.length - 25] ?? prices[0]!;
 
   return {
     currentPrice,
@@ -131,8 +140,19 @@ export const calculateIndicators = (
     prevSma20: sma(prices, 20, 1),
     prevSma50: sma(prices, 50, 1),
     rsi: rsiWilder(prices),
-    macd: currentMacd,
-    macdSignal: currentSignal,
-    macdHist: currentMacd - currentSignal,
+    macd,
+    macdSignal,
+    macdHist: macd - macdSignal,
+    prevMacd,
+    prevMacdSignal,
+    bollingerUpper,
+    bollingerMiddle,
+    bollingerLower,
+    bollingerPosition,
+    volatility20,
+    volatility100,
+    volatilityRatio: volatility100 > 0 ? volatility20 / volatility100 : 1,
+    trend4h: trendFromChange((currentPrice / fourHoursAgo - 1) * 100),
+    trend1d: trendFromChange((currentPrice / oneDayAgo - 1) * 100),
   };
 };

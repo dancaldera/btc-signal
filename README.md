@@ -2,14 +2,14 @@
 
 A lean CLI tool that analyzes Bitcoin's price using technical indicators and tells you whether to **buy**, **sell**, or **hold**.
 
-Zero dependencies. Pure Bun + TypeScript. 300 lines.
+Zero dependencies. Pure Bun + TypeScript.
 
 ## Quick Start
 
 ```bash
 git clone https://github.com/dancaldera/btc-signal.git
 cd btc-signal
-bun run src/index.ts
+bun run start
 ```
 
 That's it. No API keys, no config, no setup.
@@ -30,12 +30,15 @@ SMA 20          $72,660.20
 SMA 50          $71,797.67
 SMA 200         $68,205.41
 RSI (14)        72.56
-MACD            +832.945
-MACD Signal     +629.120
 MACD Hist       +203.825
+Bollinger       $71,200.00 / $72,660.20 / $74,120.00
+BB Position     78%
+Volatility      0.240% hourly (1.05x baseline)
+Trend 4h/1d     FLAT / UP
 
 Signal          🟡 HOLD (50% confidence)
-Why             Mixed signals - trend is positive but conditions not strong enough for entry.
+Action          WATCH
+Why             No actionable signal. Weak bullish conditions are being filtered out until confirmation improves.
 ```
 
 ## How It Works
@@ -56,22 +59,23 @@ Why             Mixed signals - trend is positive but conditions not strong enou
 | **SMA 200** | Long-term trend baseline over the last 200 hourly candles. |
 | **RSI (14)** | Momentum. Uses Wilder smoothing (industry standard). Below 30 = oversold, above 70 = overbought. |
 | **MACD** | Trend strength & direction. EMA12 - EMA26 = MACD line. EMA9 of MACD = Signal line. Histogram = difference. Positive histogram = bullish momentum. |
+| **Bollinger Bands** | Confirms whether price is near statistically stretched zones. Lower band supports oversold setups; upper band supports exit setups. |
+| **Volatility Ratio** | Close-to-close hourly volatility vs recent baseline. Low-volatility setups are filtered to avoid forcing trades in flat markets. |
+| **4h / 1d Trend** | Lightweight multi-timeframe context so entries are not taken blindly against the broader move. |
 
 ### Signal Logic
 
-Signals are generated based on how many indicators agree:
+Signals are generated from indicator agreement plus context filters:
 
-| Signal | Condition |
-|--------|-----------|
-| 🟢 **STRONG BUY** | RSI < 25 AND bullish MACD crossover |
-| 🟢 **BUY** | RSI < 35 AND (SMA20 > SMA50 OR MACD histogram positive) |
-| 🟡 **WEAK BUY** | RSI < 40 AND SMA20 > SMA50 |
-| 🔴 **STRONG SELL** | RSI > 75 AND bearish MACD crossover |
-| 🔴 **SELL** | RSI > 65 AND (SMA20 < SMA50 OR MACD histogram negative) |
-| 🟡 **WEAK SELL** | RSI > 60 AND SMA20 < SMA50 |
-| 🟡 **HOLD** | No strong consensus among indicators |
+| Signal | Action | Condition Summary |
+|--------|--------|-------------------|
+| 🟢🟢 **STRONG BUY** | `ENTER_LONG` | Deep oversold RSI + bullish MACD cross + lower Bollinger confirmation + enough volatility + no higher-timeframe downtrend. |
+| 🟢 **BUY** | `ENTER_LONG` | Oversold RSI + bullish momentum + SMA or Bollinger confirmation + enough volatility. |
+| 🔴 **SELL** | `EXIT_LONG` | Overbought RSI + bearish momentum + SMA or Bollinger confirmation + enough volatility. |
+| 🔴🔴 **STRONG SELL** | `EXIT_LONG` | Deep overbought RSI + bearish MACD cross + upper Bollinger confirmation + enough volatility. |
+| 🟡 **HOLD** | `WATCH` | Weak/low-conviction setups are intentionally filtered out. |
 
-**Confidence** is calculated by how many indicators align (RSI direction + SMA trend + MACD direction).
+Actionable long signals include suggested stop-loss, take-profit, and trailing-stop levels. These are risk-management hints, not automated orders.
 
 ## Architecture
 
@@ -80,8 +84,8 @@ src/
 ├── index.ts        # Entry point — orchestrates fetch → calculate → display
 ├── price.ts        # Fetches market data from CoinGecko API
 ├── history.ts      # Persists price history locally (JSON, max 1200 points)
-├── indicators.ts   # Calculates SMA 20/50/200, RSI (Wilder), MACD, EMA
-├── signal.ts       # Decision engine — maps indicators to buy/sell/hold signals
+├── indicators.ts   # Calculates SMA, RSI, MACD, Bollinger, volatility, multi-timeframe context
+├── signal.ts       # Decision engine — filters weak signals and adds risk guidance
 └── display.ts      # Terminal output with ANSI colors and ASCII banner
 ```
 
@@ -89,6 +93,13 @@ src/
 
 - [Bun](https://bun.sh/) runtime
 - Internet connection (for CoinGecko API)
+
+## Useful Commands
+
+```bash
+bun run start   # run the signal once
+bun run check   # TypeScript typecheck
+```
 
 ## Disclaimer
 
