@@ -59,8 +59,18 @@ export const getSignal = (i: Indicators): SignalResult => {
   const enoughVolatility = i.volatilityRatio >= 0.85 && i.volatility20 >= 0.12;
   const higherTrendBullish = i.trend4h !== "DOWN" && i.trend1d !== "DOWN";
   const higherTrendBearish = i.trend4h !== "UP" && i.trend1d !== "UP";
+  const trendContinuationLong =
+    smaBullish &&
+    bullishMacd &&
+    i.currentPrice > i.sma20 &&
+    i.rsi >= 45 &&
+    i.rsi < 68 &&
+    i.trend4h !== "DOWN" &&
+    i.trend1d === "UP" &&
+    enoughVolatility &&
+    i.bollingerPosition < 0.85;
 
-  const buyScore = [oversold, smaBullish, bullishMacd, nearLowerBand, enoughVolatility, higherTrendBullish]
+  const buyScore = [oversold || trendContinuationLong, smaBullish, bullishMacd, nearLowerBand, enoughVolatility, higherTrendBullish]
     .filter(Boolean).length;
   const sellScore = [overbought, smaBearish, bearishMacd, nearUpperBand, enoughVolatility, higherTrendBearish]
     .filter(Boolean).length;
@@ -96,6 +106,20 @@ export const getSignal = (i: Indicators): SignalResult => {
       confidence,
       shouldNotify: confidence >= 70,
       reason: "Actionable long setup: oversold RSI with bullish momentum and enough market movement.",
+      risk: longRisk(i.currentPrice, confidence),
+      notes,
+    };
+  }
+
+  if (trendContinuationLong) {
+    const confidence = clamp(62 + buyScore * 4);
+    return {
+      type: "BUY",
+      action: "ENTER_LONG",
+      icon: "🟢",
+      confidence,
+      shouldNotify: confidence >= 70,
+      reason: "Trend-continuation long: price is above key averages with bullish MACD, healthy RSI, and the 1d trend up.",
       risk: longRisk(i.currentPrice, confidence),
       notes,
     };

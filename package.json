@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "start": "bun run src/index.ts",
+    "backtest": "bun run src/backtest.ts",
     "check": "tsc --noEmit"
   },
   "devDependencies": {

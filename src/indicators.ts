@@ -105,8 +105,9 @@ export const calculateIndicators = (
   history: PricePoint[],
   currentPrice: number,
   change24h: number,
+  currentTimestamp = Date.now(),
 ): Indicators => {
-  const prices = resampleToHourly([...history, { timestamp: Date.now(), price: currentPrice }]);
+  const prices = resampleToHourly([...history, { timestamp: currentTimestamp, price: currentPrice }]);
   if (prices.length < 200) throw new Error("Need at least 200 hourly data points");
 
   const emaShort = ema(prices, 12);
