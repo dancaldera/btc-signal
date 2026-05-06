@@ -15,6 +15,7 @@ export type Indicators = {
   sma20: number;
   sma50: number;
   sma200: number;
+  sma200SlopePct: number;
   prevSma20: number;
   prevSma50: number;
   rsi: number;
@@ -30,6 +31,7 @@ export type Indicators = {
   volatility20: number;      // avg absolute hourly return, percentage
   volatility100: number;     // longer baseline, percentage
   volatilityRatio: number;   // current / baseline
+  momentum7dPct: number;
   trend4h: "UP" | "DOWN" | "FLAT";
   trend1d: "UP" | "DOWN" | "FLAT";
 };
@@ -131,6 +133,7 @@ export const calculateIndicators = (
   const volatility100 = avgAbsReturn(prices, 100);
   const fourHoursAgo = prices[prices.length - 5] ?? prices[0]!;
   const oneDayAgo = prices[prices.length - 25] ?? prices[0]!;
+  const sevenDaysAgo = prices[prices.length - 169] ?? prices[0]!;
 
   return {
     currentPrice,
@@ -138,6 +141,7 @@ export const calculateIndicators = (
     sma20: sma(prices, 20),
     sma50: sma(prices, 50),
     sma200: sma(prices, 200),
+    sma200SlopePct: ((sma(prices, 200) / sma(prices, 200, 24)) - 1) * 100,
     prevSma20: sma(prices, 20, 1),
     prevSma50: sma(prices, 50, 1),
     rsi: rsiWilder(prices),
@@ -153,6 +157,7 @@ export const calculateIndicators = (
     volatility20,
     volatility100,
     volatilityRatio: volatility100 > 0 ? volatility20 / volatility100 : 1,
+    momentum7dPct: (currentPrice / sevenDaysAgo - 1) * 100,
     trend4h: trendFromChange((currentPrice / fourHoursAgo - 1) * 100),
     trend1d: trendFromChange((currentPrice / oneDayAgo - 1) * 100),
   };

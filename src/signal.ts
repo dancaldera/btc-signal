@@ -34,9 +34,9 @@ const roundMoney = (n: number) => Math.round(n * 100) / 100;
 const longRisk = (price: number, confidence: number, mode: "reversal" | "trend" = "reversal"): SignalResult["risk"] => {
   if (mode === "trend") {
     return {
-      stopLoss: roundMoney(price * 0.96),
+      stopLoss: roundMoney(price * 0.85),
       takeProfit: null,
-      trailingStopPct: 4,
+      trailingStopPct: 20,
     };
   }
 
@@ -56,7 +56,8 @@ export const getSignal = (i: Indicators): SignalResult => {
   const bearishMacd = i.macd < i.macdSignal && i.macdHist < 0;
   const bullishMacdCross = i.prevMacd <= i.prevMacdSignal && bullishMacd;
   const bearishMacdCross = i.prevMacd >= i.prevMacdSignal && bearishMacd;
-  const smaBullish = i.sma20 > i.sma50 && i.currentPrice > i.sma200;
+  const longTermUp = i.currentPrice > i.sma200 && i.sma200SlopePct >= 0;
+  const smaBullish = i.sma20 > i.sma50 && longTermUp;
   const smaBearish = i.sma20 < i.sma50 && i.currentPrice < i.sma200;
   const oversold = i.rsi < 35;
   const deeplyOversold = i.rsi < 28;
@@ -70,13 +71,15 @@ export const getSignal = (i: Indicators): SignalResult => {
   const trendContinuationLong =
     smaBullish &&
     i.currentPrice > i.sma50 &&
-    i.rsi >= 45 &&
-    i.rsi < 75 &&
+    i.currentPrice > i.sma20 &&
+    i.rsi >= 50 &&
+    i.rsi < 72 &&
     i.trend4h !== "DOWN" &&
     i.trend1d === "UP" &&
+    i.momentum7dPct > 0 &&
     enoughVolatility &&
-    i.bollingerPosition < 1.05 &&
-    (bullishMacd || i.currentPrice > i.sma20);
+    i.bollingerPosition < 0.95 &&
+    bullishMacd;
 
   const buyScore = [oversold || trendContinuationLong, smaBullish, bullishMacd, nearLowerBand, enoughVolatility, higherTrendBullish]
     .filter(Boolean).length;
