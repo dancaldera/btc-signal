@@ -31,7 +31,15 @@ export type SignalResult = {
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
 const roundMoney = (n: number) => Math.round(n * 100) / 100;
 
-const longRisk = (price: number, confidence: number): SignalResult["risk"] => {
+const longRisk = (price: number, confidence: number, mode: "reversal" | "trend" = "reversal"): SignalResult["risk"] => {
+  if (mode === "trend") {
+    return {
+      stopLoss: roundMoney(price * 0.96),
+      takeProfit: null,
+      trailingStopPct: 4,
+    };
+  }
+
   const stopPct = confidence >= 90 ? 0.025 : 0.02;
   const rewardPct = stopPct * 2;
   return {
@@ -61,14 +69,14 @@ export const getSignal = (i: Indicators): SignalResult => {
   const higherTrendBearish = i.trend4h !== "UP" && i.trend1d !== "UP";
   const trendContinuationLong =
     smaBullish &&
-    bullishMacd &&
-    i.currentPrice > i.sma20 &&
+    i.currentPrice > i.sma50 &&
     i.rsi >= 45 &&
-    i.rsi < 68 &&
+    i.rsi < 75 &&
     i.trend4h !== "DOWN" &&
     i.trend1d === "UP" &&
     enoughVolatility &&
-    i.bollingerPosition < 0.85;
+    i.bollingerPosition < 1.05 &&
+    (bullishMacd || i.currentPrice > i.sma20);
 
   const buyScore = [oversold || trendContinuationLong, smaBullish, bullishMacd, nearLowerBand, enoughVolatility, higherTrendBullish]
     .filter(Boolean).length;
@@ -119,8 +127,8 @@ export const getSignal = (i: Indicators): SignalResult => {
       icon: "🟢",
       confidence,
       shouldNotify: confidence >= 70,
-      reason: "Trend-continuation long: price is above key averages with bullish MACD, healthy RSI, and the 1d trend up.",
-      risk: longRisk(i.currentPrice, confidence),
+      reason: "Trend-continuation long: price is above key averages with healthy RSI and the 1d trend up.",
+      risk: longRisk(i.currentPrice, confidence, "trend"),
       notes,
     };
   }
