@@ -45,10 +45,10 @@ Why             No actionable signal. Weak bullish conditions are being filtered
 
 ### Data Source
 
-- **[CoinGecko API](https://www.coingecko.com/en/api)** — free, no API key required
-- Fetches 90 days of historical price data + current price
-- Resamples into consistent hourly candles for accurate indicator calculation
-- Stores history locally at `~/.btc-signal/history.json` (keeps last 1200 data points)
+- **Binance public klines API** — free, no API key required
+- Fetches ~90 days of BTCUSDT hourly OHLCV candles
+- Uses real open/high/low/close/volume data instead of resampling price-only points
+- Stores history locally at `~/.btc-signal/ohlcv-history.json` (keeps last 2400 candles)
 
 ### Indicators
 
@@ -60,7 +60,8 @@ Why             No actionable signal. Weak bullish conditions are being filtered
 | **RSI (14)** | Momentum. Uses Wilder smoothing (industry standard). Below 30 = oversold, above 70 = overbought. |
 | **MACD** | Trend strength & direction. EMA12 - EMA26 = MACD line. EMA9 of MACD = Signal line. Histogram = difference. Positive histogram = bullish momentum. |
 | **Bollinger Bands** | Confirms whether price is near statistically stretched zones. Lower band supports oversold setups; upper band supports exit setups. |
-| **Volatility Ratio** | Close-to-close hourly volatility vs recent baseline. Low-volatility setups are filtered to avoid forcing trades in flat markets. |
+| **ATR Volatility Ratio** | True-range hourly volatility vs recent baseline using real high/low/close candles. Low-volatility setups are filtered to avoid forcing trades in flat markets. |
+| **Volume Ratio** | Recent BTC volume vs longer baseline. Thin-volume setups are filtered/lowered in confidence. |
 | **4h / 1d Trend** | Lightweight multi-timeframe context so entries are not taken blindly against the broader move. |
 
 ### Signal Logic
@@ -94,8 +95,8 @@ The simulator compares strategy performance against buy & hold and applies the s
 ```
 src/
 ├── index.ts        # Entry point — orchestrates fetch → calculate → display
-├── price.ts        # Fetches market data from CoinGecko API
-├── history.ts      # Persists price history locally (JSON, max 1200 points)
+├── price.ts        # Fetches BTCUSDT OHLCV candles from Binance public API
+├── history.ts      # Persists BTC OHLCV history locally (JSON, max 2400 candles)
 ├── indicators.ts   # Calculates SMA, RSI, MACD, Bollinger, volatility, multi-timeframe context
 ├── signal.ts       # Decision engine — filters weak signals and adds risk guidance
 └── display.ts      # Terminal output with ANSI colors and ASCII banner
@@ -104,7 +105,7 @@ src/
 ## Requirements
 
 - [Bun](https://bun.sh/) runtime
-- Internet connection (for CoinGecko API)
+- Internet connection (for Binance public market data)
 
 ## Useful Commands
 

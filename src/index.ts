@@ -2,7 +2,7 @@
  * index.ts — Entry point
  *
  * Orchestrates the pipeline:
- *   1. Fetch market data from CoinGecko
+ *   1. Fetch BTC OHLCV market data from Binance
  *   2. Merge with stored local history
  *   3. Compute technical indicators (SMA, RSI, MACD)
  *   4. Generate a buy/sell/hold signal
@@ -16,13 +16,12 @@ import { render, renderError } from "./display";
 import { getSignal } from "./signal";
 
 const main = async (): Promise<void> => {
-  // Fetch fresh data from CoinGecko
+  // Fetch fresh BTC OHLCV data from Binance
   const market = await fetchMarketData();
 
-  // Merge with locally stored history for better indicator accuracy
+  // Merge with locally stored OHLCV history for better indicator accuracy
   const stored = await loadHistory();
-  const latest = [...market.history, { timestamp: Date.now(), price: market.currentPrice }];
-  const history = mergeHistory(stored, latest);
+  const history = mergeHistory(stored, market.history);
   await saveHistory(history);
 
   // Calculate indicators and generate signal

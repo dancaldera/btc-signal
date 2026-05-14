@@ -1,7 +1,7 @@
 import { loadHistory } from "./history";
 import { calculateIndicators } from "./indicators";
 import { getSignal, type SignalResult } from "./signal";
-import type { PricePoint } from "./price";
+import type { Candle } from "./price";
 
 type Trade = {
   entryTime: number;
@@ -38,14 +38,8 @@ const money = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigi
 const pct = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}%`;
 const when = (ts: number) => new Date(ts).toISOString().slice(0, 16).replace("T", " ") + " UTC";
 
-const hourlyCloses = (history: PricePoint[]): PricePoint[] => {
-  const buckets = new Map<number, PricePoint>();
-  for (const point of history) {
-    const timestamp = Math.floor(point.timestamp / 3600000) * 3600000;
-    buckets.set(timestamp, { timestamp, price: point.price });
-  }
-  return [...buckets.values()].sort((a, b) => a.timestamp - b.timestamp);
-};
+const hourlyCloses = (history: Candle[]): Candle[] =>
+  [...new Map(history.map((c) => [c.timestamp, c] as const)).values()].sort((a, b) => a.timestamp - b.timestamp);
 
 const closePosition = (
   position: Position,
@@ -92,28 +86,28 @@ const main = async () => {
   for (let i = warmupIndex; i < candles.length; i++) {
     const candle = candles[i]!;
     const prior24 = candles[Math.max(0, i - 24)]!;
-    const change24h = (candle.price / prior24.price - 1) * 100;
-    const signal = getSignal(calculateIndicators(candles.slice(0, i + 1), candle.price, change24h, candle.timestamp));
-    if (signal.action !== "WATCH") signals.push({ timestamp: candle.timestamp, signal, price: candle.price });
+    const change24h = (candle.close / prior24.close - 1) * 100;
+    const signal = getSignal(calculateIndicators(candles.slice(0, i + 1), candle.close, change24h, candle.timestamp));
+    if (signal.action !== "WATCH") signals.push({ timestamp: candle.timestamp, signal, price: candle.close });
 
     if (position) {
-      position.highWater = Math.max(position.highWater, candle.price);
+      position.highWater = Math.max(position.highWater, candle.close);
       const trailingStop = position.trailingStopPct
         ? position.highWater * (1 - position.trailingStopPct / 100)
         : null;
       const activeStop = Math.max(position.stopLoss ?? 0, trailingStop ?? 0);
 
       const exitReason =
-        activeStop > 0 && candle.price <= activeStop
+        activeStop > 0 && candle.close <= activeStop
           ? "STOP"
-          : position.takeProfit && candle.price >= position.takeProfit
+          : position.takeProfit && candle.close >= position.takeProfit
             ? "TAKE_PROFIT"
             : signal.action === "EXIT_LONG"
               ? signal.type
               : null;
 
       if (exitReason) {
-        const result = closePosition(position, candle.timestamp, candle.price, cash, exitReason);
+        const result = closePosition(position, candle.timestamp, candle.close, cash, exitReason);
         cash = result.cash;
         trades.push(result.trade);
         position = null;
@@ -125,23 +119,23 @@ const main = async () => {
       const spendable = cash - fee;
       position = {
         entryTime: candle.timestamp,
-        entryPrice: candle.price,
-        qty: spendable / candle.price,
+        entryPrice: candle.close,
+        qty: spendable / candle.close,
         entrySignal: signal.type,
         stopLoss: signal.risk.stopLoss,
         takeProfit: signal.risk.takeProfit,
         trailingStopPct: signal.risk.trailingStopPct,
-        highWater: candle.price,
+        highWater: candle.close,
       };
       cash = 0;
     }
   }
 
   const last = candles[candles.length - 1]!;
-  const finalValue = position ? cash + position.qty * last.price * (1 - feePct) : cash;
+  const finalValue = position ? cash + position.qty * last.close * (1 - feePct) : cash;
   const first = candles[warmupIndex]!;
-  const buyHoldQty = (initialCapital * (1 - feePct)) / first.price;
-  const buyHold = buyHoldQty * last.price * (1 - feePct);
+  const buyHoldQty = (initialCapital * (1 - feePct)) / first.close;
+  const buyHold = buyHoldQty * last.close * (1 - feePct);
 
   console.log(`Backtest: last ${days} days, ${money(initialCapital)} initial, ${(feePct * 100).toFixed(2)}% fee per side`);
   console.log(`Window: ${when(first.timestamp)} → ${when(last.timestamp)}`);
@@ -164,7 +158,7 @@ const main = async () => {
 
   if (position) {
     console.log("");
-    console.log(`Open position from ${when(position.entryTime)} @ ${money(position.entryPrice)}; marked at ${money(last.price)}.`);
+    console.log(`Open position from ${when(position.entryTime)} @ ${money(position.entryPrice)}; marked at ${money(last.close)}.`);
   }
 };
 

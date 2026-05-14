@@ -1,11 +1,9 @@
 /**
  * signal.ts — Decision engine
  *
- * The engine intentionally ignores weak BUY/SELL entries as actionable
- * notifications. Weak setups become WATCH/HOLD so the bot does not encourage
- * low-conviction trades. Entry/exit signals require indicator agreement plus
- * market context: trend, Bollinger position, and enough close-to-close
- * volatility to make the move worth watching.
+ * Weak BUY/SELL entries become WATCH/HOLD. Actionable signals require
+ * indicator agreement plus context: trend, Bollinger position, ATR volatility,
+ * and enough real BTC volume from OHLCV candles.
  */
 
 import type { Indicators } from "./indicators";
@@ -31,21 +29,28 @@ export type SignalResult = {
 const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)));
 const roundMoney = (n: number) => Math.round(n * 100) / 100;
 
-const longRisk = (price: number, confidence: number, mode: "reversal" | "trend" = "reversal"): SignalResult["risk"] => {
+const longRisk = (
+  price: number,
+  confidence: number,
+  atr20: number,
+  mode: "reversal" | "trend" = "reversal",
+): SignalResult["risk"] => {
+  const safeAtr = Number.isFinite(atr20) && atr20 > 0 ? atr20 : price * 0.01;
+
   if (mode === "trend") {
     return {
-      stopLoss: roundMoney(price * 0.85),
+      stopLoss: roundMoney(Math.max(price * 0.85, price - safeAtr * 4)),
       takeProfit: null,
-      trailingStopPct: 20,
+      trailingStopPct: Math.max(6, Math.min(20, (safeAtr / price) * 100 * 4)),
     };
   }
 
-  const stopPct = confidence >= 90 ? 0.025 : 0.02;
-  const rewardPct = stopPct * 2;
+  const minStopPct = confidence >= 90 ? 0.025 : 0.02;
+  const stopDistance = Math.max(price * minStopPct, safeAtr * 1.5);
   return {
-    stopLoss: roundMoney(price * (1 - stopPct)),
-    takeProfit: roundMoney(price * (1 + rewardPct)),
-    trailingStopPct: confidence >= 90 ? 2.5 : 2,
+    stopLoss: roundMoney(price - stopDistance),
+    takeProfit: roundMoney(price + stopDistance * 2),
+    trailingStopPct: Math.max(2, (stopDistance / price) * 100),
   };
 };
 
@@ -65,7 +70,8 @@ export const getSignal = (i: Indicators): SignalResult => {
   const deeplyOverbought = i.rsi > 75;
   const nearLowerBand = i.bollingerPosition < 0.25;
   const nearUpperBand = i.bollingerPosition > 0.75;
-  const enoughVolatility = i.volatilityRatio >= 0.85 && i.volatility20 >= 0.12;
+  const enoughVolatility = i.volatilityRatio >= 0.85 && i.volatility20 >= 0.35;
+  const enoughVolume = i.volumeRatio >= 0.75;
   const higherTrendBullish = i.trend4h !== "DOWN" && i.trend1d !== "DOWN";
   const higherTrendBearish = i.trend4h !== "UP" && i.trend1d !== "UP";
   const trendContinuationLong =
@@ -78,23 +84,27 @@ export const getSignal = (i: Indicators): SignalResult => {
     i.trend1d === "UP" &&
     i.momentum7dPct > 0 &&
     enoughVolatility &&
+    enoughVolume &&
     i.bollingerPosition < 0.95 &&
     bullishMacd;
 
-  const buyScore = [oversold || trendContinuationLong, smaBullish, bullishMacd, nearLowerBand, enoughVolatility, higherTrendBullish]
+  const buyScore = [oversold || trendContinuationLong, smaBullish, bullishMacd, nearLowerBand, enoughVolatility, enoughVolume, higherTrendBullish]
     .filter(Boolean).length;
-  const sellScore = [overbought, smaBearish, bearishMacd, nearUpperBand, enoughVolatility, higherTrendBearish]
+  const sellScore = [overbought, smaBearish, bearishMacd, nearUpperBand, enoughVolatility, enoughVolume, higherTrendBearish]
     .filter(Boolean).length;
 
   const notes = [
     enoughVolatility
-      ? `Volatility is tradable (${i.volatilityRatio.toFixed(2)}x recent baseline).`
-      : `Volatility is low (${i.volatilityRatio.toFixed(2)}x recent baseline), avoid forcing entries.`,
+      ? `ATR volatility is tradable (${i.volatilityRatio.toFixed(2)}x recent baseline).`
+      : `ATR volatility is low (${i.volatilityRatio.toFixed(2)}x recent baseline), avoid forcing entries.`,
+    enoughVolume
+      ? `Volume is acceptable (${i.volumeRatio.toFixed(2)}x baseline).`
+      : `Volume is thin (${i.volumeRatio.toFixed(2)}x baseline), lower confidence.`,
     `4h trend: ${i.trend4h}; 1d trend: ${i.trend1d}.`,
     nearLowerBand ? "Price is near the lower Bollinger band." : nearUpperBand ? "Price is near the upper Bollinger band." : "Price is inside the Bollinger range.",
   ];
 
-  if (deeplyOversold && bullishMacdCross && nearLowerBand && enoughVolatility && higherTrendBullish) {
+  if (deeplyOversold && bullishMacdCross && nearLowerBand && enoughVolatility && enoughVolume && higherTrendBullish) {
     const confidence = clamp(82 + buyScore * 3);
     return {
       type: "STRONG BUY",
@@ -102,13 +112,13 @@ export const getSignal = (i: Indicators): SignalResult => {
       icon: "🟢🟢",
       confidence,
       shouldNotify: true,
-      reason: "High-conviction reversal: deeply oversold RSI, bullish MACD cross, lower Bollinger confirmation, and acceptable volatility.",
-      risk: longRisk(i.currentPrice, confidence),
+      reason: "High-conviction reversal: deeply oversold RSI, bullish MACD cross, lower Bollinger confirmation, tradable ATR, and acceptable volume.",
+      risk: longRisk(i.currentPrice, confidence, i.atr20),
       notes,
     };
   }
 
-  if (oversold && bullishMacd && (smaBullish || nearLowerBand) && enoughVolatility && higherTrendBullish && buyScore >= 4) {
+  if (oversold && bullishMacd && (smaBullish || nearLowerBand) && enoughVolatility && enoughVolume && higherTrendBullish && buyScore >= 5) {
     const confidence = clamp(66 + buyScore * 4);
     return {
       type: "BUY",
@@ -116,8 +126,8 @@ export const getSignal = (i: Indicators): SignalResult => {
       icon: "🟢",
       confidence,
       shouldNotify: confidence >= 70,
-      reason: "Actionable long setup: oversold RSI with bullish momentum and enough market movement.",
-      risk: longRisk(i.currentPrice, confidence),
+      reason: "Actionable long setup: oversold RSI with bullish momentum, real volume, and enough ATR movement.",
+      risk: longRisk(i.currentPrice, confidence, i.atr20),
       notes,
     };
   }
@@ -130,13 +140,13 @@ export const getSignal = (i: Indicators): SignalResult => {
       icon: "🟢",
       confidence,
       shouldNotify: confidence >= 70,
-      reason: "Trend-continuation long: price is above key averages with healthy RSI and the 1d trend up.",
-      risk: longRisk(i.currentPrice, confidence, "trend"),
+      reason: "Trend-continuation long: price is above key averages with healthy RSI, 1d trend up, and acceptable volume.",
+      risk: longRisk(i.currentPrice, confidence, i.atr20, "trend"),
       notes,
     };
   }
 
-  if (deeplyOverbought && bearishMacdCross && nearUpperBand && enoughVolatility && higherTrendBearish) {
+  if (deeplyOverbought && bearishMacdCross && nearUpperBand && enoughVolatility && enoughVolume && higherTrendBearish) {
     const confidence = clamp(82 + sellScore * 3);
     return {
       type: "STRONG SELL",
@@ -144,13 +154,13 @@ export const getSignal = (i: Indicators): SignalResult => {
       icon: "🔴🔴",
       confidence,
       shouldNotify: true,
-      reason: "High-conviction exit: deeply overbought RSI, bearish MACD cross, upper Bollinger confirmation, and acceptable volatility.",
+      reason: "High-conviction exit: deeply overbought RSI, bearish MACD cross, upper Bollinger confirmation, tradable ATR, and acceptable volume.",
       risk: noRisk(),
       notes,
     };
   }
 
-  if (overbought && bearishMacd && (smaBearish || nearUpperBand) && enoughVolatility && higherTrendBearish && sellScore >= 4) {
+  if (overbought && bearishMacd && (smaBearish || nearUpperBand) && enoughVolatility && enoughVolume && higherTrendBearish && sellScore >= 5) {
     const confidence = clamp(66 + sellScore * 4);
     return {
       type: "SELL",
@@ -158,7 +168,7 @@ export const getSignal = (i: Indicators): SignalResult => {
       icon: "🔴",
       confidence,
       shouldNotify: confidence >= 70,
-      reason: "Actionable exit setup: overbought RSI with bearish momentum and enough market movement.",
+      reason: "Actionable exit setup: overbought RSI with bearish momentum, real volume, and enough ATR movement.",
       risk: noRisk(),
       notes,
     };

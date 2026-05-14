@@ -1,13 +1,11 @@
 /**
- * indicators.ts — Technical indicator calculations
+ * indicators.ts — Technical indicator calculations from real BTC OHLCV candles.
  *
- * Works from CoinGecko price-only history, resampled into hourly candles.
- * Because the free endpoint used here does not provide OHLCV, volatility is
- * estimated from close-to-close returns instead of true ATR, and volume is not
- * used until a richer data source is added.
+ * Close-based indicators still use hourly closes, but volatility now uses ATR
+ * from high/low/close and entries can require volume confirmation.
  */
 
-import type { PricePoint } from "./price";
+import type { Candle } from "./price";
 
 export type Indicators = {
   currentPrice: number;
@@ -27,10 +25,14 @@ export type Indicators = {
   bollingerUpper: number;
   bollingerMiddle: number;
   bollingerLower: number;
-  bollingerPosition: number; // 0 = lower band, 1 = upper band
-  volatility20: number;      // avg absolute hourly return, percentage
-  volatility100: number;     // longer baseline, percentage
-  volatilityRatio: number;   // current / baseline
+  bollingerPosition: number;
+  volatility20: number;      // ATR(20) as % of close
+  volatility100: number;     // ATR(100) as % of close
+  volatilityRatio: number;
+  atr20: number;
+  volume20: number;
+  volume100: number;
+  volumeRatio: number;
   momentum7dPct: number;
   trend4h: "UP" | "DOWN" | "FLAT";
   trend1d: "UP" | "DOWN" | "FLAT";
@@ -54,9 +56,7 @@ const ema = (values: number[], period: number): number[] => {
   if (values.length === 0) return [];
   const k = 2 / (period + 1);
   const result: number[] = [values[0]!];
-  for (let i = 1; i < values.length; i++) {
-    result.push(values[i]! * k + result[i - 1]! * (1 - k));
-  }
+  for (let i = 1; i < values.length; i++) result.push(values[i]! * k + result[i - 1]! * (1 - k));
   return result;
 };
 
@@ -79,22 +79,17 @@ const rsiWilder = (values: number[], period = 14): number => {
   return 100 - 100 / (1 + rs);
 };
 
-const resampleToHourly = (history: PricePoint[]): number[] => {
-  const hourlyBuckets = new Map<number, number>();
-  for (const point of history) {
-    const hour = Math.floor(point.timestamp / 3600000) * 3600000;
-    hourlyBuckets.set(hour, point.price);
-  }
-  return Array.from(hourlyBuckets.entries())
-    .sort(([a], [b]) => a - b)
-    .map(([, price]) => price);
-};
+const trueRanges = (candles: Candle[]): number[] =>
+  candles.map((c, i) => {
+    const prevClose = candles[i - 1]?.close ?? c.close;
+    return Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+  });
 
-const avgAbsReturn = (values: number[], period: number): number => {
-  if (values.length < period + 1) return NaN;
-  const slice = values.slice(-(period + 1));
-  const returns = slice.slice(1).map((price, i) => Math.abs((price / slice[i]! - 1) * 100));
-  return avg(returns);
+const atrPct = (candles: Candle[], period: number): number => {
+  if (candles.length < period + 1) return NaN;
+  const trs = trueRanges(candles).slice(-period);
+  const close = candles[candles.length - 1]!.close;
+  return (avg(trs) / close) * 100;
 };
 
 const trendFromChange = (changePct: number): "UP" | "DOWN" | "FLAT" => {
@@ -104,14 +99,20 @@ const trendFromChange = (changePct: number): "UP" | "DOWN" | "FLAT" => {
 };
 
 export const calculateIndicators = (
-  history: PricePoint[],
+  history: Candle[],
   currentPrice: number,
   change24h: number,
   currentTimestamp = Date.now(),
 ): Indicators => {
-  const prices = resampleToHourly([...history, { timestamp: currentTimestamp, price: currentPrice }]);
-  if (prices.length < 200) throw new Error("Need at least 200 hourly data points");
+  const candles = [...history].sort((a, b) => a.timestamp - b.timestamp);
+  const last = candles[candles.length - 1];
+  if (last && currentTimestamp > last.timestamp && currentPrice !== last.close) {
+    candles.push({ timestamp: currentTimestamp, open: currentPrice, high: currentPrice, low: currentPrice, close: currentPrice, volume: 0 });
+  }
+  if (candles.length < 200) throw new Error("Need at least 200 hourly OHLCV candles");
 
+  const prices = candles.map((c) => c.close);
+  const volumes = candles.map((c) => c.volume);
   const emaShort = ema(prices, 12);
   const emaLong = ema(prices, 26);
   const macdLine = emaShort.map((val, i) => val - emaLong[i]!);
@@ -129,8 +130,10 @@ export const calculateIndicators = (
   const bollingerUpper = bollingerMiddle + bandWidth;
   const bollingerPosition = bandWidth === 0 ? 0.5 : (currentPrice - bollingerLower) / (bollingerUpper - bollingerLower);
 
-  const volatility20 = avgAbsReturn(prices, 20);
-  const volatility100 = avgAbsReturn(prices, 100);
+  const volatility20 = atrPct(candles, 20);
+  const volatility100 = atrPct(candles, 100);
+  const volume20 = sma(volumes, 20);
+  const volume100 = sma(volumes, 100);
   const fourHoursAgo = prices[prices.length - 5] ?? prices[0]!;
   const oneDayAgo = prices[prices.length - 25] ?? prices[0]!;
   const sevenDaysAgo = prices[prices.length - 169] ?? prices[0]!;
@@ -157,6 +160,10 @@ export const calculateIndicators = (
     volatility20,
     volatility100,
     volatilityRatio: volatility100 > 0 ? volatility20 / volatility100 : 1,
+    atr20: (volatility20 / 100) * currentPrice,
+    volume20,
+    volume100,
+    volumeRatio: volume100 > 0 ? volume20 / volume100 : 1,
     momentum7dPct: (currentPrice / sevenDaysAgo - 1) * 100,
     trend4h: trendFromChange((currentPrice / fourHoursAgo - 1) * 100),
     trend1d: trendFromChange((currentPrice / oneDayAgo - 1) * 100),

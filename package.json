@@ -6,7 +6,6 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "backtest": "bun run src/backtest.ts",
-    "backtest:multi": "bun run src/multiBacktest.ts",
     "check": "tsc --noEmit"
   },
   "devDependencies": {
