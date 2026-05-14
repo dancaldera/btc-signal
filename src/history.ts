@@ -1,41 +1,45 @@
 /**
- * history.ts — Local price history persistence
+ * history.ts — Local BTC OHLCV history persistence
  *
- * Stores fetched price data in ~/.btc-signal/history.json so indicators
- * can be calculated across runs without re-fetching everything.
- *
- * Keeps a rolling window of the last 1200 data points to bound file size.
- * Deduplicates by timestamp when merging new data with stored history.
+ * Stores Binance BTCUSDT hourly candles in ~/.btc-signal/ohlcv-history.json.
+ * Keeps a rolling window to bound file size and deduplicates by candle open
+ * timestamp when merging fresh data with stored history.
  */
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
-import type { PricePoint } from "./price";
+import type { Candle } from "./price";
 
-const FILE = join(homedir(), ".btc-signal", "history.json");
+const FILE = join(homedir(), ".btc-signal", "ohlcv-history.json");
+const MAX_CANDLES = 2400;
 
-/** Load stored history from disk. Returns empty array if file doesn't exist yet. */
-export const loadHistory = async (): Promise<PricePoint[]> => {
+const isValidCandle = (c: Candle): boolean =>
+  Number.isFinite(c.timestamp) &&
+  Number.isFinite(c.open) &&
+  Number.isFinite(c.high) &&
+  Number.isFinite(c.low) &&
+  Number.isFinite(c.close) &&
+  Number.isFinite(c.volume) &&
+  c.high >= Math.max(c.open, c.close) &&
+  c.low <= Math.min(c.open, c.close) &&
+  c.close > 0;
+
+export const loadHistory = async (): Promise<Candle[]> => {
   try {
-    return JSON.parse(await readFile(FILE, "utf8")) as PricePoint[];
+    const parsed = JSON.parse(await readFile(FILE, "utf8")) as Candle[];
+    return parsed.filter(isValidCandle);
   } catch {
     return [];
   }
 };
 
-/**
- * Merge stored and fresh price data, deduplicating by timestamp.
- * Sorted chronologically, capped at last 1200 points.
- */
-export const mergeHistory = (base: PricePoint[], extra: PricePoint[]): PricePoint[] =>
-  [...new Map([...base, ...extra].map((p) => [p.timestamp, p] as const)).values()]
-    .filter((p) => Number.isFinite(p.timestamp) && Number.isFinite(p.price))
+export const mergeHistory = (base: Candle[], extra: Candle[]): Candle[] =>
+  [...new Map([...base, ...extra].filter(isValidCandle).map((c) => [c.timestamp, c] as const)).values()]
     .sort((a, b) => a.timestamp - b.timestamp)
-    .slice(-1200);
+    .slice(-MAX_CANDLES);
 
-/** Persist merged history to disk. Creates the directory if needed. */
-export const saveHistory = async (history: PricePoint[]): Promise<void> => {
+export const saveHistory = async (history: Candle[]): Promise<void> => {
   await mkdir(dirname(FILE), { recursive: true });
   await writeFile(FILE, JSON.stringify(history, null, 2));
 };

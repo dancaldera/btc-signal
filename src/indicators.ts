@@ -1,79 +1,74 @@
 /**
- * indicators.ts — Technical indicator calculations
+ * indicators.ts — Technical indicator calculations from real BTC OHLCV candles.
  *
- * All indicators are computed on resampled hourly candles to ensure
- * consistent periods regardless of CoinGecko's irregular data spacing.
- *
- * Indicators calculated:
- *   - SMA 20 / 50 / 200 → short, medium, and long-term trend
- *   - RSI (14)          → momentum via Wilder smoothing
- *   - MACD              → EMA12 - EMA26, signal = EMA9 of MACD
+ * Close-based indicators still use hourly closes, but volatility now uses ATR
+ * from high/low/close and entries can require volume confirmation.
  */
 
-import type { PricePoint } from "./price";
+import type { Candle } from "./price";
 
-/** All computed indicators bundled together for the signal engine */
 export type Indicators = {
   currentPrice: number;
   change24h: number;
   sma20: number;
   sma50: number;
   sma200: number;
-  prevSma20: number;  // previous candle's SMA — used to detect crossovers
+  sma200SlopePct: number;
+  prevSma20: number;
   prevSma50: number;
   rsi: number;
-  macd: number;       // MACD line = EMA12 - EMA26
-  macdSignal: number; // Signal line = EMA9 of MACD
-  macdHist: number;   // Histogram = MACD - Signal (positive = bullish)
+  macd: number;
+  macdSignal: number;
+  macdHist: number;
+  prevMacd: number;
+  prevMacdSignal: number;
+  bollingerUpper: number;
+  bollingerMiddle: number;
+  bollingerLower: number;
+  bollingerPosition: number;
+  volatility20: number;      // ATR(20) as % of close
+  volatility100: number;     // ATR(100) as % of close
+  volatilityRatio: number;
+  atr20: number;
+  volume20: number;
+  volume100: number;
+  volumeRatio: number;
+  momentum7dPct: number;
+  trend4h: "UP" | "DOWN" | "FLAT";
+  trend1d: "UP" | "DOWN" | "FLAT";
 };
 
-/** Simple average of an array of numbers */
 const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
 
-/**
- * Simple Moving Average. Offset=0 gives current SMA, offset=1 gives
- * the previous period's SMA (for crossover detection).
- */
 const sma = (values: number[], period: number, offset = 0): number => {
   const end = offset ? values.length - offset : values.length;
   if (end < period) return NaN;
   return avg(values.slice(end - period, end));
 };
 
-/**
- * Exponential Moving Average. Returns the full EMA series so MACD
- * can compute its signal line from it. Multiplier k = 2/(period+1).
- */
+const stddev = (values: number[]): number => {
+  if (values.length === 0) return NaN;
+  const mean = avg(values);
+  return Math.sqrt(avg(values.map((v) => (v - mean) ** 2)));
+};
+
 const ema = (values: number[], period: number): number[] => {
   if (values.length === 0) return [];
   const k = 2 / (period + 1);
   const result: number[] = [values[0]!];
-  for (let i = 1; i < values.length; i++) {
-    result.push(values[i]! * k + result[i - 1]! * (1 - k));
-  }
+  for (let i = 1; i < values.length; i++) result.push(values[i]! * k + result[i - 1]! * (1 - k));
   return result;
 };
 
-/**
- * RSI using Wilder's smoothing method (the industry standard).
- *
- * 1. Seed: simple average of first `period` gains/losses
- * 2. Smooth: avgGain = (prev * (period-1) + current) / period
- * 3. RS = avgGain / avgLoss → RSI = 100 - 100/(1+RS)
- *
- * Returns 50 (neutral) if not enough data. Returns 100 if avgLoss is 0.
- */
 const rsiWilder = (values: number[], period = 14): number => {
   if (values.length < period + 1) return 50;
   const deltas = values.slice(1).map((val, i) => val - values[i]!);
-  const gains = deltas.map(d => Math.max(d, 0));
-  const losses = deltas.map(d => Math.max(-d, 0));
+  const gains = deltas.map((d) => Math.max(d, 0));
+  const losses = deltas.map((d) => Math.max(-d, 0));
 
-  // Seed with simple average of first `period` values
   let avgGain = avg(gains.slice(0, period));
   let avgLoss = avg(losses.slice(0, period));
 
-  // Apply Wilder smoothing for remaining values
   for (let i = period; i < gains.length; i++) {
     avgGain = (avgGain * (period - 1) + gains[i]!) / period;
     avgLoss = (avgLoss * (period - 1) + losses[i]!) / period;
@@ -84,43 +79,64 @@ const rsiWilder = (values: number[], period = 14): number => {
   return 100 - 100 / (1 + rs);
 };
 
-/**
- * Resamples irregular CoinGecko price points into consistent hourly candles.
- * Groups by hour (floor timestamp to hour), takes the last price in each bucket.
- * This ensures SMA/EMA periods are truly N hours, not N random data points.
- */
-const resampleToHourly = (history: PricePoint[]): number[] => {
-  const hourlyBuckets = new Map<number, number>();
-  for (const point of history) {
-    const hour = Math.floor(point.timestamp / 3600000) * 3600000;
-    hourlyBuckets.set(hour, point.price); // last price in each hour wins
-  }
-  return Array.from(hourlyBuckets.values());
+const trueRanges = (candles: Candle[]): number[] =>
+  candles.map((c, i) => {
+    const prevClose = candles[i - 1]?.close ?? c.close;
+    return Math.max(c.high - c.low, Math.abs(c.high - prevClose), Math.abs(c.low - prevClose));
+  });
+
+const atrPct = (candles: Candle[], period: number): number => {
+  if (candles.length < period + 1) return NaN;
+  const trs = trueRanges(candles).slice(-period);
+  const close = candles[candles.length - 1]!.close;
+  return (avg(trs) / close) * 100;
 };
 
-/**
- * Main entry point — takes raw history + current price and returns
- * all computed indicators. Appends current price to history before
- * resampling so the latest hour is included.
- */
+const trendFromChange = (changePct: number): "UP" | "DOWN" | "FLAT" => {
+  if (changePct > 0.35) return "UP";
+  if (changePct < -0.35) return "DOWN";
+  return "FLAT";
+};
+
 export const calculateIndicators = (
-  history: PricePoint[],
+  history: Candle[],
   currentPrice: number,
   change24h: number,
+  currentTimestamp = Date.now(),
 ): Indicators => {
-  const prices = resampleToHourly([...history, { timestamp: Date.now(), price: currentPrice }]);
-  if (prices.length < 26) throw new Error("Need at least 26 hourly data points");
+  const candles = [...history].sort((a, b) => a.timestamp - b.timestamp);
+  const last = candles[candles.length - 1];
+  if (last && currentTimestamp > last.timestamp && currentPrice !== last.close) {
+    candles.push({ timestamp: currentTimestamp, open: currentPrice, high: currentPrice, low: currentPrice, close: currentPrice, volume: 0 });
+  }
+  if (candles.length < 200) throw new Error("Need at least 200 hourly OHLCV candles");
 
-  // MACD: EMA12 - EMA26, then EMA9 of that = signal line
-  const shortPeriod = 12, longPeriod = 26;
-  const emaShort = ema(prices, shortPeriod);
-  const emaLong = ema(prices, longPeriod);
+  const prices = candles.map((c) => c.close);
+  const volumes = candles.map((c) => c.volume);
+  const emaShort = ema(prices, 12);
+  const emaLong = ema(prices, 26);
   const macdLine = emaShort.map((val, i) => val - emaLong[i]!);
-  // MACD signal starts after EMA26 has enough data
-  const macdSignalLine = ema(macdLine.slice(longPeriod - 1), 9);
+  const macdSignalLine = ema(macdLine.slice(25), 9);
 
-  const currentMacd = macdLine[macdLine.length - 1]!;
-  const currentSignal = macdSignalLine[macdSignalLine.length - 1]!;
+  const macd = macdLine[macdLine.length - 1]!;
+  const macdSignal = macdSignalLine[macdSignalLine.length - 1]!;
+  const prevMacd = macdLine[macdLine.length - 2]!;
+  const prevMacdSignal = macdSignalLine[macdSignalLine.length - 2]!;
+
+  const last20 = prices.slice(-20);
+  const bollingerMiddle = avg(last20);
+  const bandWidth = stddev(last20) * 2;
+  const bollingerLower = bollingerMiddle - bandWidth;
+  const bollingerUpper = bollingerMiddle + bandWidth;
+  const bollingerPosition = bandWidth === 0 ? 0.5 : (currentPrice - bollingerLower) / (bollingerUpper - bollingerLower);
+
+  const volatility20 = atrPct(candles, 20);
+  const volatility100 = atrPct(candles, 100);
+  const volume20 = sma(volumes, 20);
+  const volume100 = sma(volumes, 100);
+  const fourHoursAgo = prices[prices.length - 5] ?? prices[0]!;
+  const oneDayAgo = prices[prices.length - 25] ?? prices[0]!;
+  const sevenDaysAgo = prices[prices.length - 169] ?? prices[0]!;
 
   return {
     currentPrice,
@@ -128,11 +144,28 @@ export const calculateIndicators = (
     sma20: sma(prices, 20),
     sma50: sma(prices, 50),
     sma200: sma(prices, 200),
+    sma200SlopePct: ((sma(prices, 200) / sma(prices, 200, 24)) - 1) * 100,
     prevSma20: sma(prices, 20, 1),
     prevSma50: sma(prices, 50, 1),
     rsi: rsiWilder(prices),
-    macd: currentMacd,
-    macdSignal: currentSignal,
-    macdHist: currentMacd - currentSignal,
+    macd,
+    macdSignal,
+    macdHist: macd - macdSignal,
+    prevMacd,
+    prevMacdSignal,
+    bollingerUpper,
+    bollingerMiddle,
+    bollingerLower,
+    bollingerPosition,
+    volatility20,
+    volatility100,
+    volatilityRatio: volatility100 > 0 ? volatility20 / volatility100 : 1,
+    atr20: (volatility20 / 100) * currentPrice,
+    volume20,
+    volume100,
+    volumeRatio: volume100 > 0 ? volume20 / volume100 : 1,
+    momentum7dPct: (currentPrice / sevenDaysAgo - 1) * 100,
+    trend4h: trendFromChange((currentPrice / fourHoursAgo - 1) * 100),
+    trend1d: trendFromChange((currentPrice / oneDayAgo - 1) * 100),
   };
 };

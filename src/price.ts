@@ -1,49 +1,106 @@
 /**
- * price.ts — Market data fetcher
+ * price.ts — BTC OHLCV market data fetcher
  *
- * Fetches current BTC price + 90 days of historical data from CoinGecko's
- * free API. No API key needed — just hit the endpoints.
- *
- * Two endpoints used in parallel:
- *   /market_chart  → 90 days of hourly price points (for indicators)
- *   /simple/price  → current price + 24h % change (for display)
+ * Uses Binance public BTCUSDT hourly klines for real OHLCV candles. This is
+ * materially better than CoinGecko price-only samples because indicators can
+ * use true highs/lows, ATR-style volatility, and volume confirmation.
  */
 
-/** A single price observation at a point in time */
-export type PricePoint = { timestamp: number; price: number };
-
-/** Everything we need from the API in one bundle */
-export type MarketData = { currentPrice: number; change24h: number; history: PricePoint[] };
-
-// CoinGecko free endpoints (no auth, ~30 req/min rate limit)
-const HIST_URL =
-  "https://api.coingecko.com/api/v3/coins/bitcoin/market_chart?vs_currency=usd&days=90";
-const PRICE_URL =
-  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd&include_24hr_change=true";
-
-/** Typed JSON fetch helper with error handling */
-const getJson = async <T>(url: string): Promise<T> => {
-  const res = await fetch(url, { headers: { accept: "application/json" } });
-  if (!res.ok) throw new Error(`CoinGecko request failed: ${res.status} ${res.statusText}`);
-  return (await res.json()) as T;
+export type Candle = {
+  timestamp: number; // open time, ms
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number; // base BTC volume
 };
 
-/**
- * Fetches both current price and historical data in parallel.
- * Filters out any non-finite prices and caps at the last 1200 points.
- * Throws if we get fewer than 50 data points (not enough for indicators).
- */
+export type MarketData = { currentPrice: number; change24h: number; history: Candle[] };
+
+const BINANCE_KLINES_URL = "https://api.binance.com/api/v3/klines";
+const HOUR_MS = 3600000;
+const HISTORY_DAYS = 90;
+const MAX_CANDLES = 2400;
+
+type BinanceKline = [
+  number,
+  string,
+  string,
+  string,
+  string,
+  string,
+  number,
+  string,
+  number,
+  string,
+  string,
+  string,
+];
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const getJson = async <T>(url: string): Promise<T> => {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const res = await fetch(url, { headers: { accept: "application/json" } });
+    if (res.ok) return (await res.json()) as T;
+
+    if (res.status !== 429 && res.status < 500) throw new Error(`Binance request failed: ${res.status} ${res.statusText}`);
+    const retryAfter = Number(res.headers.get("retry-after"));
+    await sleep(Number.isFinite(retryAfter) ? retryAfter * 1000 : 1500 * (attempt + 1));
+  }
+  throw new Error("Binance request failed after retries");
+};
+
+const parseKline = (row: BinanceKline): Candle => ({
+  timestamp: row[0],
+  open: Number(row[1]),
+  high: Number(row[2]),
+  low: Number(row[3]),
+  close: Number(row[4]),
+  volume: Number(row[5]),
+});
+
+const isValidCandle = (c: Candle): boolean =>
+  Number.isFinite(c.timestamp) &&
+  Number.isFinite(c.open) &&
+  Number.isFinite(c.high) &&
+  Number.isFinite(c.low) &&
+  Number.isFinite(c.close) &&
+  Number.isFinite(c.volume) &&
+  c.high >= Math.max(c.open, c.close) &&
+  c.low <= Math.min(c.open, c.close) &&
+  c.close > 0;
+
 export const fetchMarketData = async (): Promise<MarketData> => {
-  const [chart, current] = await Promise.all([
-    getJson<{ prices: [number, number][] }>(HIST_URL),
-    getJson<{ bitcoin?: { usd?: number; usd_24h_change?: number } }>(PRICE_URL),
-  ]);
-  const btc = current.bitcoin;
-  if (!btc?.usd || typeof btc.usd_24h_change !== "number") throw new Error("Invalid current price payload");
-  const history = chart.prices
-    .map(([timestamp, price]) => ({ timestamp, price }))
-    .filter((p) => Number.isFinite(p.price))
-    .slice(-1200);
-  if (history.length < 50) throw new Error("Not enough historical data returned");
-  return { currentPrice: btc.usd, change24h: btc.usd_24h_change, history };
+  const endTime = Date.now();
+  let startTime = endTime - HISTORY_DAYS * 24 * HOUR_MS;
+  const candles: Candle[] = [];
+
+  while (startTime < endTime && candles.length < MAX_CANDLES) {
+    const url = new URL(BINANCE_KLINES_URL);
+    url.searchParams.set("symbol", "BTCUSDT");
+    url.searchParams.set("interval", "1h");
+    url.searchParams.set("limit", "1000");
+    url.searchParams.set("startTime", String(startTime));
+    url.searchParams.set("endTime", String(endTime));
+
+    const batch = (await getJson<BinanceKline[]>(url.toString())).map(parseKline).filter(isValidCandle);
+    if (batch.length === 0) break;
+
+    candles.push(...batch);
+    startTime = batch[batch.length - 1]!.timestamp + HOUR_MS;
+    if (batch.length < 1000) break;
+  }
+
+  const history = [...new Map(candles.map((c) => [c.timestamp, c] as const)).values()]
+    .sort((a, b) => a.timestamp - b.timestamp)
+    .slice(-MAX_CANDLES);
+
+  if (history.length < 240) throw new Error("Not enough BTCUSDT hourly OHLCV candles returned");
+
+  const currentPrice = history[history.length - 1]!.close;
+  const prior24 = history[Math.max(0, history.length - 25)]!;
+  const change24h = (currentPrice / prior24.close - 1) * 100;
+
+  return { currentPrice, change24h, history };
 };
